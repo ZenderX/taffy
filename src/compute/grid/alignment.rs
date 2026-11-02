@@ -121,6 +121,12 @@ pub(super) fn align_and_position_item(
     };
 
     let position = style.position();
+    // A subgrid is stretched over its grid area in a subgridded axis, whatever its alignment and size properties
+    // (https://drafts.csswg.org/css-grid-2/#subgrid-box-alignment)
+    let is_subgrid = InBothAbsAxis {
+        horizontal: position != Position::Absolute && style.is_subgrid(AbsoluteAxis::Horizontal),
+        vertical: position != Position::Absolute && style.is_subgrid(AbsoluteAxis::Vertical),
+    };
     let inset_horizontal = style
         .inset()
         .horizontal_components()
@@ -188,6 +194,10 @@ pub(super) fn align_and_position_item(
         width: grid_area_size.width.maybe_sub(margin.left).maybe_sub(margin.right),
         height: grid_area_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - baseline_shim,
     };
+    let subgrid_size = Size {
+        width: is_subgrid.horizontal.then_some(grid_area_minus_item_margins_size.width),
+        height: is_subgrid.vertical.then_some(grid_area_minus_item_margins_size.height),
+    };
 
     // A size that is a sizing keyword (min-content, max-content, fit-content,
     // fit-content(...), stretch) either resolves to an exact size or is resolved
@@ -227,7 +237,7 @@ pub(super) fn align_and_position_item(
 
     // If node is absolutely positioned and width is not set explicitly, then deduce it
     // from left, right and container_content_box if both are set.
-    let width = inherent_size.width.or_else(|| {
+    let width = subgrid_size.width.or(inherent_size.width).or_else(|| {
         // Apply width derived from both the left and right properties of an absolutely
         // positioned element being set
         if position == Position::Absolute {
@@ -274,7 +284,7 @@ pub(super) fn align_and_position_item(
     // Reapply aspect ratio after stretch and absolute position width adjustments
     let Size { width, height } = Size { width, height: inherent_size.height }.maybe_apply_aspect_ratio(aspect_ratio);
 
-    let height = height.or_else(|| {
+    let height = subgrid_size.height.or(height).or_else(|| {
         if position == Position::Absolute {
             if let (Some(top), Some(bottom)) = (inset_vertical.start, inset_vertical.end) {
                 return Some(f32_max(grid_area_minus_item_margins_size.height - top - bottom, 0.0));
@@ -323,7 +333,7 @@ pub(super) fn align_and_position_item(
     let Size { width, height } = Size { width, height }.maybe_apply_aspect_ratio(aspect_ratio);
 
     // Clamp size by min and max width/height
-    let Size { width, height } = Size { width, height }.maybe_clamp(min_size, max_size);
+    let Size { width, height } = subgrid_size.or(Size { width, height }.maybe_clamp(min_size, max_size));
 
     // Layout node
     let size = if position == Position::Absolute && (width.is_none() || height.is_none()) {
@@ -350,7 +360,8 @@ pub(super) fn align_and_position_item(
     );
 
     // Resolve final size
-    let Size { width, height } = size.unwrap_or(layout_output.size).maybe_clamp(min_size, max_size);
+    let Size { width, height } =
+        subgrid_size.unwrap_or(size.unwrap_or(layout_output.size).maybe_clamp(min_size, max_size));
 
     let (x, x_margin) = align_item_within_area(
         Line { start: grid_area.left, end: grid_area.right },

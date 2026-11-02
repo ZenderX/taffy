@@ -295,6 +295,14 @@ pub trait GridItemStyle: CoreStyle {
         Style::<Self::CustomIdent>::DEFAULT.justify_self
     }
 
+    /// Whether the item is a subgrid in the passed axis: a grid container whose `grid-template-columns`
+    /// (horizontal) or `grid-template-rows` (vertical) is `subgrid`
+    /// (<https://drafts.csswg.org/css-grid-2/#subgrid-per-axis>)
+    #[inline(always)]
+    fn is_subgrid(&self, _axis: AbsoluteAxis) -> bool {
+        false
+    }
+
     /// Get a grid item's row or column placement depending on the axis passed
     #[inline(always)]
     fn grid_placement(&self, axis: AbsoluteAxis) -> Line<GridPlacement<Self::CustomIdent>> {

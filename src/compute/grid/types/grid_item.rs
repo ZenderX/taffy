@@ -2,7 +2,7 @@
 use super::GridTrack;
 use crate::compute::common::sizing_keyword::{resolve_sizing_keyword, SizingKeywordResolution};
 use crate::compute::grid::OriginZeroLine;
-use crate::geometry::AbstractAxis;
+use crate::geometry::{AbsoluteAxis, AbstractAxis, InBothAbsAxis};
 use crate::geometry::{Line, Point, Rect, Size};
 use crate::style::{AlignItems, AlignSelf, AvailableSpace, Dimension, LengthPercentageAuto, Overflow};
 use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
@@ -32,6 +32,8 @@ pub(in super::super) struct GridItem {
     /// Is it a compressible replaced element?
     /// https://drafts.csswg.org/css-sizing-3/#min-content-zero
     pub is_compressible_replaced: bool,
+    /// Whether the item is a subgrid in each axis
+    pub is_subgrid: InBothAbsAxis<bool>,
     /// The item's overflow style
     pub overflow: Point<Overflow>,
     /// The item's box_sizing style
@@ -109,6 +111,10 @@ impl GridItem {
             row: row_span,
             column: col_span,
             is_compressible_replaced: style.is_compressible_replaced(),
+            is_subgrid: InBothAbsAxis {
+                horizontal: style.is_subgrid(AbsoluteAxis::Horizontal),
+                vertical: style.is_subgrid(AbsoluteAxis::Vertical),
+            },
             overflow: style.overflow(),
             box_sizing: style.box_sizing(),
             size: style.size(),

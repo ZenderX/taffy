@@ -183,6 +183,9 @@ where
     debug_push_node!(node);
 
     // First we check if we have a cached result for the given input
+    #[cfg(feature = "grid")]
+    let cache_entry = if grid::subgrid::has_parent_tracks(node) { None } else { tree.cache_get(node, &inputs) };
+    #[cfg(not(feature = "grid"))]
     let cache_entry = tree.cache_get(node, &inputs);
     if let Some(cached_size_and_baselines) = cache_entry {
         debug_log_node!(inputs);

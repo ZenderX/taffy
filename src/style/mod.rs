@@ -50,7 +50,7 @@ use crate::style_helpers::TaffyAuto as _;
 use core::fmt::Debug;
 
 #[cfg(feature = "grid")]
-use crate::geometry::Line;
+use crate::geometry::{AbsoluteAxis, Line};
 #[cfg(feature = "serde")]
 use crate::style_helpers;
 #[cfg(feature = "grid")]
@@ -729,6 +729,16 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     /// Defines the track sizing functions (widths) of the grid columns
     #[cfg(feature = "grid")]
     pub grid_template_columns: GridTrackVec<GridTemplateComponent<S>>,
+    /// `grid-template-rows: subgrid`: a grid item with `display: grid` takes its rows from the tracks
+    /// it spans in its parent grid, and `grid_template_rows` is ignored.
+    /// `grid_template_row_names` holds the subgrid's `<line-name-list>`.
+    #[cfg(feature = "grid")]
+    pub grid_template_rows_subgrid: bool,
+    /// `grid-template-columns: subgrid`: a grid item with `display: grid` takes its columns from the
+    /// tracks it spans in its parent grid, and `grid_template_columns` is ignored.
+    /// `grid_template_column_names` holds the subgrid's `<line-name-list>`.
+    #[cfg(feature = "grid")]
+    pub grid_template_columns_subgrid: bool,
     /// Defines the size of implicitly created rows
     #[cfg(feature = "grid")]
     pub grid_auto_rows: GridTrackVec<TrackSizingFunction>,
@@ -820,6 +830,10 @@ impl<S: CheapCloneStr> Style<S> {
         grid_template_rows: GridTrackVec::new(),
         #[cfg(feature = "grid")]
         grid_template_columns: GridTrackVec::new(),
+        #[cfg(feature = "grid")]
+        grid_template_rows_subgrid: false,
+        #[cfg(feature = "grid")]
+        grid_template_columns_subgrid: false,
         #[cfg(feature = "grid")]
         grid_template_areas: None,
         #[cfg(feature = "grid")]
@@ -1382,6 +1396,14 @@ impl<S: CheapCloneStr> GridItemStyle for Style<S> {
     fn justify_self(&self) -> Option<AlignSelf> {
         self.justify_self
     }
+    #[inline(always)]
+    fn is_subgrid(&self, axis: AbsoluteAxis) -> bool {
+        self.display == Display::Grid
+            && match axis {
+                AbsoluteAxis::Horizontal => self.grid_template_columns_subgrid,
+                AbsoluteAxis::Vertical => self.grid_template_rows_subgrid,
+            }
+    }
 }
 
 #[cfg(feature = "grid")]
@@ -1401,6 +1423,10 @@ impl<T: GridItemStyle> GridItemStyle for &'_ T {
     #[inline(always)]
     fn justify_self(&self) -> Option<AlignSelf> {
         (*self).justify_self()
+    }
+    #[inline(always)]
+    fn is_subgrid(&self, axis: AbsoluteAxis) -> bool {
+        (*self).is_subgrid(axis)
     }
 }
 
@@ -1471,6 +1497,10 @@ mod tests {
             grid_template_rows: Default::default(),
             #[cfg(feature = "grid")]
             grid_template_columns: Default::default(),
+            #[cfg(feature = "grid")]
+            grid_template_rows_subgrid: false,
+            #[cfg(feature = "grid")]
+            grid_template_columns_subgrid: false,
             #[cfg(feature = "grid")]
             grid_template_row_names: Default::default(),
             #[cfg(feature = "grid")]

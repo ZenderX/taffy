@@ -418,9 +418,11 @@ fn build_style<S: CheapCloneStr>(xnode: roxmltree::Node) -> taffy::Style<S> {
 
         grid_template_rows: grid_template_rows.tracks,
         grid_template_row_names: grid_template_rows.line_names,
+        grid_template_rows_subgrid: false,
 
         grid_template_columns: grid_template_columns.tracks,
         grid_template_column_names: grid_template_columns.line_names,
+        grid_template_columns_subgrid: false,
 
         // TODO
         grid_auto_rows: parse_or_default::<GridAutoTracks>(xnode.attribute("grid-auto-rows")).0,

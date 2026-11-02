@@ -16,6 +16,7 @@ use alignment::{align_and_position_item, align_tracks};
 use explicit_grid::{compute_explicit_grid_size_in_axis, initialize_grid_tracks, AutoRepeatStrategy};
 use implicit_grid::compute_grid_size_estimate;
 use placement::place_grid_items;
+use subgrid::SubgridTracks;
 use track_sizing::{
     determine_if_item_crosses_flexible_or_intrinsic_tracks, resolve_item_track_indexes, track_sizing_algorithm,
 };
@@ -37,6 +38,7 @@ mod alignment;
 mod explicit_grid;
 mod implicit_grid;
 mod placement;
+pub(crate) mod subgrid;
 mod track_sizing;
 mod types;
 mod util;
@@ -198,25 +200,43 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         None => AutoRepeatStrategy::MinRepetitionsThatDoOverflow,
     });
 
+    // A parent grid hands a subgrid the parent tracks it spans, which are its explicit tracks in that axis
+    // (a subgrid measured without them is laid out as an independent grid)
+    let parent_columns = subgrid::parent_tracks(node, AbsoluteAxis::Horizontal);
+    let parent_rows = subgrid::parent_tracks(node, AbsoluteAxis::Vertical);
+
     // Compute the number of rows and columns in the explicit grid *template*
     // (explicit tracks from grid_areas are computed separately below)
-    let (col_auto_repetition_count, grid_template_col_count) = compute_explicit_grid_size_in_axis(
-        &style,
-        auto_fit_container_size.width,
-        auto_repeat_fit_strategy.width,
-        |val, basis| tree.calc(val, basis),
-        AbsoluteAxis::Horizontal,
-    );
-    let (row_auto_repetition_count, grid_template_row_count) = compute_explicit_grid_size_in_axis(
-        &style,
-        auto_fit_container_size.height,
-        auto_repeat_fit_strategy.height,
-        |val, basis| tree.calc(val, basis),
-        AbsoluteAxis::Vertical,
-    );
+    let (col_auto_repetition_count, grid_template_col_count) = match &parent_columns {
+        Some(parent_columns) => (0, parent_columns.tracks.len() as u16),
+        None => compute_explicit_grid_size_in_axis(
+            &style,
+            auto_fit_container_size.width,
+            auto_repeat_fit_strategy.width,
+            |val, basis| tree.calc(val, basis),
+            AbsoluteAxis::Horizontal,
+        ),
+    };
+    let (row_auto_repetition_count, grid_template_row_count) = match &parent_rows {
+        Some(parent_rows) => (0, parent_rows.tracks.len() as u16),
+        None => compute_explicit_grid_size_in_axis(
+            &style,
+            auto_fit_container_size.height,
+            auto_repeat_fit_strategy.height,
+            |val, basis| tree.calc(val, basis),
+            AbsoluteAxis::Vertical,
+        ),
+    };
 
     // type CustomIdent<'a> = <<Tree as LayoutPartialTree>::CoreContainerStyle<'_> as CoreStyle>::CustomIdent;
     let mut name_resolver = NamedLineResolver::new(&style, col_auto_repetition_count, row_auto_repetition_count);
+    // A subgrid's lines also carry the names of the parent lines they coincide with
+    if let Some(parent_columns) = &parent_columns {
+        name_resolver.add_line_names(AbsoluteAxis::Horizontal, &parent_columns.line_names);
+    }
+    if let Some(parent_rows) = &parent_rows {
+        name_resolver.add_line_names(AbsoluteAxis::Vertical, &parent_rows.line_names);
+    }
 
     // Clamp the explicit grid to MAX_GRID_TRACKS tracks in each axis
     // https://www.w3.org/TR/css-grid-1/#overlarge-grids
@@ -285,6 +305,25 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         row_auto_repetition_count,
         |row_index| cell_occupancy_matrix.row_is_occupied(row_index),
     );
+    if parent_columns.is_some() || parent_rows.is_some() {
+        // The subgrid's content box starts after its margin, border and padding from its grid area's start edge
+        let margin =
+            style.margin().map(|margin| margin.resolve_or_zero(parent_size.width, |val, basis| tree.calc(val, basis)));
+        let inline_start = if direction.is_rtl() {
+            margin.right + border.right + padding.right
+        } else {
+            margin.left + border.left + padding.left
+        };
+        if let Some(parent_columns) = &parent_columns {
+            let content_size = inner_node_size.width.unwrap_or(f32::INFINITY);
+            parent_columns.apply(&mut columns, final_col_counts.negative_implicit, inline_start, content_size);
+        }
+        if let Some(parent_rows) = &parent_rows {
+            let content_size = inner_node_size.height.unwrap_or(f32::INFINITY);
+            let block_start = margin.top + border.top + padding.top;
+            parent_rows.apply(&mut rows, final_row_counts.negative_implicit, block_start, content_size);
+        }
+    }
 
     drop(grid_template_rows);
     drop(grid_template_columns);
@@ -328,22 +367,24 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     items.iter_mut().for_each(|item| item.grid_area_size_cache = None);
 
-    // Run track sizing algorithm for Block axis
-    track_sizing_algorithm(
-        tree,
-        AbstractAxis::Block,
-        inner_min_size.get(AbstractAxis::Block),
-        inner_max_size.get(AbstractAxis::Block),
-        align_content,
-        justify_content,
-        available_grid_space,
-        inner_node_size,
-        &mut rows,
-        &mut columns,
-        &mut items,
-        |track: &GridTrack, _, _| Some(track.base_size),
-        false, // TODO: Support baseline alignment in the vertical axis
-    );
+    // Run track sizing algorithm for Block axis, measuring column subgrids on the sized columns
+    subgrid::with_parent_tracks(subgrid::sized_columns(&items, &columns, &name_resolver), || {
+        track_sizing_algorithm(
+            tree,
+            AbstractAxis::Block,
+            inner_min_size.get(AbstractAxis::Block),
+            inner_max_size.get(AbstractAxis::Block),
+            align_content,
+            justify_content,
+            available_grid_space,
+            inner_node_size,
+            &mut rows,
+            &mut columns,
+            &mut items,
+            |track: &GridTrack, _, _| Some(track.base_size),
+            false, // TODO: Support baseline alignment in the vertical axis
+        )
+    });
     let initial_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.height = inner_node_size.height.or_else(|| initial_row_sum.into());
 
@@ -479,7 +520,9 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         rerun_row_sizing = parent_height_indefinite && has_percentage_row;
 
         if !rerun_row_sizing {
-            intrinsic_row_contribution_changed =
+            // Column subgrids are measured on the re-sized columns
+            let subgrid_columns = subgrid::sized_columns(&items, &columns, &name_resolver);
+            intrinsic_row_contribution_changed = subgrid::with_parent_tracks(subgrid_columns, || {
                 items.iter_mut().filter(|item| item.crosses_intrinsic_column).any(|item| {
                     let grid_area_size = item.grid_area_size(
                         AbstractAxis::Block,
@@ -501,7 +544,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                     item.minimum_contribution_cache.height = None;
 
                     has_changed
-                });
+                })
+            });
             rerun_row_sizing = intrinsic_row_contribution_changed;
         } else {
             items.iter_mut().for_each(|item| {
@@ -515,21 +559,23 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
         if rerun_row_sizing {
             // Re-run track sizing algorithm for Block axis
-            track_sizing_algorithm(
-                tree,
-                AbstractAxis::Block,
-                inner_min_size.get(AbstractAxis::Block),
-                inner_max_size.get(AbstractAxis::Block),
-                align_content,
-                justify_content,
-                available_grid_space,
-                inner_node_size,
-                &mut rows,
-                &mut columns,
-                &mut items,
-                |track: &GridTrack, _, _| Some(track.base_size),
-                false, // TODO: Support baseline alignment in the vertical axis
-            );
+            subgrid::with_parent_tracks(subgrid::sized_columns(&items, &columns, &name_resolver), || {
+                track_sizing_algorithm(
+                    tree,
+                    AbstractAxis::Block,
+                    inner_min_size.get(AbstractAxis::Block),
+                    inner_max_size.get(AbstractAxis::Block),
+                    align_content,
+                    justify_content,
+                    available_grid_space,
+                    inner_node_size,
+                    &mut rows,
+                    &mut columns,
+                    &mut items,
+                    |track: &GridTrack, _, _| Some(track.base_size),
+                    false, // TODO: Support baseline alignment in the vertical axis
+                )
+            });
         }
     }
 
@@ -622,20 +668,52 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 columns[item.column_indexes.end as usize].offset
             },
         };
+        let subgrid_columns = item.is_subgrid.horizontal.then(|| {
+            SubgridTracks::spanned(
+                &columns,
+                item.column_indexes,
+                Line { start: grid_area.left, end: grid_area.right },
+                direction.is_rtl(),
+                &name_resolver,
+                AbsoluteAxis::Horizontal,
+                item.column,
+            )
+        });
+        let subgrid_rows = item.is_subgrid.vertical.then(|| {
+            SubgridTracks::spanned(
+                &rows,
+                item.row_indexes,
+                Line { start: grid_area.top, end: grid_area.bottom },
+                false,
+                &name_resolver,
+                AbsoluteAxis::Vertical,
+                item.row,
+            )
+        });
         #[cfg_attr(not(feature = "content_size"), allow(unused_variables))]
-        let (overflow_contribution, y_position, height) = align_and_position_item(
-            tree,
-            item.node,
-            index as u32,
-            grid_area,
-            container_alignment_styles,
-            item.baseline_shim,
-            direction,
-            container_border_box.width,
-            border,
-            #[cfg(feature = "content_size")]
-            is_scroll_container,
-        );
+        let mut subgrid_entries = Vec::new();
+        if subgrid_columns.is_some() || subgrid_rows.is_some() {
+            subgrid_entries.push(subgrid::ParentTracks {
+                node: item.node,
+                columns: subgrid_columns,
+                rows: subgrid_rows,
+            });
+        }
+        let (overflow_contribution, y_position, height) = subgrid::with_parent_tracks(subgrid_entries, || {
+            align_and_position_item(
+                tree,
+                item.node,
+                index as u32,
+                grid_area,
+                container_alignment_styles,
+                item.baseline_shim,
+                direction,
+                container_border_box.width,
+                border,
+                #[cfg(feature = "content_size")]
+                is_scroll_container,
+            )
+        });
         item.y_position = y_position;
         item.height = height;
 

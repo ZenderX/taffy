@@ -6,13 +6,12 @@ use crate::{
 };
 use core::{borrow::Borrow, cmp::Ordering, fmt::Debug};
 
-use super::{GridLine, MAX_GRID_TRACKS};
-#[cfg(feature = "detailed_layout_info")]
+use super::{GridLine, OriginZeroLine, MAX_GRID_TRACKS};
 use crate::geometry::AbsoluteAxis;
 #[cfg(feature = "detailed_layout_info")]
 use crate::sys::DefaultCheapStr;
 // use alloc::fmt::format;
-use crate::sys::{format, Map, Vec};
+use crate::sys::{format, Map, String, Vec};
 use smallvec::{smallvec, SmallVec};
 
 /// Wrap an `AsRef<str>` type with a type which implements Hash by first
@@ -512,6 +511,49 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     /// Set the number of rows in the explicit grid
     pub(crate) fn set_explicit_row_count(&mut self, count: u16) {
         self.explicit_row_count = count;
+    }
+
+    /// The names of the lines from `span.start` to `span.end` in the passed axis, each paired
+    /// with its one-indexed line number counted from `span.start`: a subgrid spanning `span`
+    /// inherits them (<https://drafts.csswg.org/css-grid-2/#subgrid-line-names>)
+    pub(crate) fn line_names_in_span(&self, axis: AbsoluteAxis, span: Line<OriginZeroLine>) -> Vec<(u16, String)> {
+        let lines = match axis {
+            AbsoluteAxis::Horizontal => &self.column_lines,
+            AbsoluteAxis::Vertical => &self.row_lines,
+        };
+        // Stored lines are one-indexed from the first explicit line, origin-zero line 0
+        let first = span.start.0 as i32 + 1;
+        let last = span.end.0 as i32 + 1;
+        let mut names = Vec::new();
+        for (name, positions) in lines.iter() {
+            for &position in positions.iter() {
+                let position = position as i32;
+                if (first..=last).contains(&position) {
+                    names.push(((position - first + 1) as u16, String::from(name.0.as_ref())));
+                }
+            }
+        }
+        names
+    }
+
+    /// Add the passed `(one-indexed line, name)` pairs to the line names of the passed axis
+    pub(crate) fn add_line_names(&mut self, axis: AbsoluteAxis, names: &[(u16, String)]) {
+        let lines = match axis {
+            AbsoluteAxis::Horizontal => &mut self.column_lines,
+            AbsoluteAxis::Vertical => &mut self.row_lines,
+        };
+        for (line, name) in names {
+            #[cfg(feature = "detailed_layout_info")]
+            match axis {
+                AbsoluteAxis::Horizontal => self.column_line_name_pairs.push((*line as u32, S::from(name.as_str()))),
+                AbsoluteAxis::Vertical => self.row_line_name_pairs.push((*line as u32, S::from(name.as_str()))),
+            }
+            upsert_line_name_map(lines, S::from(name.as_str()), *line as u32);
+        }
+        for positions in lines.values_mut() {
+            positions.sort_unstable();
+            positions.dedup();
+        }
     }
 }
 
